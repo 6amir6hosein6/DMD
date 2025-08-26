@@ -28,6 +28,13 @@ from easydict import EasyDict as edict
 import os.path as osp
 import pandas
 IDX = 0
+
+def custom_repr(self):
+    return f'{{Tensor:{tuple(self.shape)}}} {original_repr(self)}'
+
+original_repr = torch.Tensor.__repr__
+torch.Tensor.__repr__ = custom_repr
+
 class BackgroundGenerator(threading.Thread):
     # def __init__(self, generator, local_rank, max_prefetch=4):
     def __init__(self, generator, max_prefetch=4):
@@ -241,15 +248,18 @@ def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4
     def distance_theta(theta, theta2=None):
         theta2 = theta if theta2 is None else theta2
         d = (theta[:, :, None] - theta2[:, None] + 180) % 360 - 180
+        #theta[:, :, None] (B,N)  → (B,N,1) |  theta2[:, None] (B, N) → (B,1, N)
         return d
     
     def distance_R(mnts):
         d = torch.rad2deg(torch.atan2(mnts[:, :, 1, None] - mnts[:, None, :, 1], mnts[:,None, :, 0] - mnts[:, :, 0, None]))
+        # mnts[:, :, 1, None] → shape (B, N, 1) , mnts[:, None, :, 1] → shape (B, 1, N)
         d = (mnts[:, :, 2, None] + d + 180) % 360 - 180
         return d
     
     def distance_mnts(mnts):
         d = torch.sqrt((mnts[:, :, 0, None] - mnts[:, None, :, 0])**2 + (mnts[:, :, 1, None] - mnts[:, None, :, 1])**2)
+        # mnts[:, :, 1, None] → shape (B, N, 1) , mnts[:, None, :, 1] → shape (B, 1, N)
         return d
     
     def relax_labeling(mnts1, mnts2, scores, min_number, n_pair): # min_number is the valid number of the mnts for each batch
@@ -263,8 +273,14 @@ def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4
         n_rel = 5
 
         D1 = torch.abs(distance_mnts(mnts1) - distance_mnts(mnts2))
+
         D2 = torch.deg2rad(torch.abs((distance_theta(mnts1[:, :, 2]) - distance_theta(mnts2[:,:, 2])+180) % 360 - 180))
+        #just send the theta (B, N, [x, y, theta])  → [B, N, theta] - size:(B, N)
+
         D3 = torch.deg2rad(torch.abs((distance_R(mnts1[:, :, :3]) - distance_R(mnts2[:, :, :3]) + 180) % 360 - 180))
+
+
+
         lambda_t = scores
         rp = (
             sigmoid(D1, mu_1, tau_1)
@@ -298,6 +314,7 @@ def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4
     new_S = torch.nn.functional.pad(1 - S2, (0, max_n - n2, 0, max_n - n1, 0 , 0), value=2)
     new_S = torch.where(torch.isnan(new_S), torch.tensor(2.0).to(new_S.device), new_S)
 
+    #hungarian
     if n1 < n2:
         batch_set_pairs = batch_linear_assignment(new_S)
         org_pair = torch.arange(new_S.shape[1])[None,...].repeat(B,1).to(new_S.device)
@@ -320,7 +337,12 @@ def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4
     score = relax_labeling(mnt1_order, mnt2_order, scores, min_number, n_pair) 
     return score
 class Evaluator:
+<<<<<<< HEAD
     def __init__(self, params, gpus, is_load=False, is_relax=False, Normalize=False, Binary=False) -> None:
+=======
+    def __init__(self, params, gpus, is_load=False, is_relax=True, Normalize=True, Binary=False) -> None:
+        # params = self.load_config_file(cfg_path)
+>>>>>>> 11c6e71 (Adding some comments for guidance)
         self.update_attrs(params)
         self.gpus = gpus
         self.relax = is_relax
@@ -368,7 +390,7 @@ class Evaluator:
                 dataname=self.eval_dataset,
             )
             logging.info(f"Dataset: {self.eval_dataset}")
-            workers = min(16, self.batch_size // 2)
+            workers = 1
             self.evalloader = DataLoaderX(
                 dataset=self.test_dataset,
                 batch_size=self.batch_size,
@@ -513,10 +535,10 @@ class Evaluator:
         score_matrix = np.zeros((len(search_imgs), len(gallery_imgs)))
         # create the dataset for calculating the scores
         match_dataset = MatchDataset(self.save_folder)
-        workers = min(16, self.batch_size // 2)
+        workers = 1
         matchloader = DataLoaderX(
             dataset=match_dataset,
-            batch_size=256,
+            batch_size=1,
             collate_fn=pad_collate_fn,
             shuffle=False,
             num_workers=workers,
@@ -592,18 +614,20 @@ class Evaluator:
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Evaluation for DMD")
-    parser.add_argument("--eval_dataset", "-d", type=str, required=True, default="NIST_SD27", help="The dataset for evaluation")
+    parser.add_argument("--eval_dataset", "-d", type=str, required=False, default="SNIST27", help="The dataset for evaluation")
     parser.add_argument("--gpus", "-g", default=[0], type=int, nargs="+")
-    parser.add_argument("--extract", "-e", action="store_true")
+    parser.add_argument("--extract", "-e", action="store_true", default=True)
     parser.add_argument("--binary", "-b", action="store_true")
-    parser.add_argument("--method", "-m", type=str, required=True, default='DMD',  help="The DMD version for evaluation")
-    parser.add_argument("--score_norm", "-sn", action="store_true", help="Whether to use score normalization or not")
+    parser.add_argument("--method", "-m", type=str, required=False, default='DMD',  help="The DMD version for evaluation")
+    parser.add_argument("--score_norm", "-sn", action="store_true", default=True, help="Whether to use score normalization or not")
     args = parser.parse_args()
     yaml_path = f'{args.method}.yaml' 
     params = edict(yaml.safe_load(open(yaml_path, "r")))
     params.update(vars(args))
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
     logging.info(f"loading training profile from {yaml_path}")
+    
+    
     t = Evaluator(params, args.gpus, is_load=args.extract, is_relax=True, Normalize=args.score_norm, Binary=args.binary) 
     logging.info(f"Start to evaluate the dataset: {t.eval_dataset}")
     if args.extract:
