@@ -390,7 +390,7 @@ class Evaluator:
                 dataname=self.eval_dataset,
             )
             logging.info(f"Dataset: {self.eval_dataset}")
-            workers = 1
+            workers = self.workers
             self.evalloader = DataLoaderX(
                 dataset=self.test_dataset,
                 batch_size=self.batch_size,
@@ -535,10 +535,10 @@ class Evaluator:
         score_matrix = np.zeros((len(search_imgs), len(gallery_imgs)))
         # create the dataset for calculating the scores
         match_dataset = MatchDataset(self.save_folder)
-        workers = 1
+        workers = self.workers
         matchloader = DataLoaderX(
             dataset=match_dataset,
-            batch_size=1,
+            batch_size=self.batch_size,
             collate_fn=pad_collate_fn,
             shuffle=False,
             num_workers=workers,
