@@ -176,9 +176,9 @@ class MatchDataset(Dataset):
         self.gallery_folder = osp.join(feat_folder, "gallery")
         # search and gallery list
         self.search_list = os.listdir(self.search_folder)
-        self.search_list.sort()
+        self.search_list.sort(key=lambda x: os.path.getsize(osp.join(self.search_folder, x)))
         self.gallery_list = os.listdir(self.gallery_folder)
-        self.gallery_list.sort()        
+        self.gallery_list.sort(key=lambda x: os.path.getsize(osp.join(self.gallery_folder, x)))        
         # get the combination of search and gallery
         self.items = list(product(self.search_list, self.gallery_list))
         # get the max mnt number, for padding

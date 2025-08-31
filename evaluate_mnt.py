@@ -528,9 +528,9 @@ class Evaluator:
         global IDX
         print(f'start calculating the scores on {self.search_folder}')
         search_imgs = os.listdir(self.search_folder)
-        search_imgs.sort()
+        search_imgs.sort(key=lambda x: os.path.getsize(osp.join(self.search_folder, x)))
         gallery_imgs = os.listdir(self.gallery_folder)
-        gallery_imgs.sort()
+        gallery_imgs.sort(key=lambda x: os.path.getsize(osp.join(self.gallery_folder, x)))
         # calculate the scores
         score_matrix = np.zeros((len(search_imgs), len(gallery_imgs)))
         # create the dataset for calculating the scores
