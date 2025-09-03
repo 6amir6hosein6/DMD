@@ -1,5 +1,5 @@
 NoMP: 44.636115
-batch_size: 1
+batch_size: 2
 workers: 1
 comments: DMD(Dense_Minutia_Descriptor)
 debug: false

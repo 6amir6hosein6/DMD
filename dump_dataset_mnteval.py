@@ -61,7 +61,7 @@ if __name__ == "__main__":
     random.seed(1016)
     np.random.seed(1016)
     parser = argparse.ArgumentParser("Evaluation for DMD")
-    parser.add_argument("--prefix", type=str, default="TEST_DATA/SNIST27") # Adjusted prefix path
+    parser.add_argument("--prefix", type=str, default="TEST_DATA/NIST27") # Adjusted prefix path
     args = parser.parse_args()
 
     # List of datasets to process and their corresponding image types
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     # image_extensions = ['png']
     # We can combine them for clarity if processing multiple types in the future
     datasets_config = [
-        ('SNIST27', 'png')
+        ('NIST27', 'png')
     ]
 
     output_dir = './datasets'

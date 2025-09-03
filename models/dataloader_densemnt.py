@@ -181,7 +181,32 @@ class MatchDataset(Dataset):
         self.gallery_list.sort(key=lambda x: os.path.getsize(osp.join(self.gallery_folder, x)))        
         # get the combination of search and gallery
         self.items = list(product(self.search_list, self.gallery_list))
+        
+        
+        self.max_search_mnt, self.max_gallery_mnt = self.find_max_mnt()
+        
         # get the max mnt number, for padding
+
+    def find_max_mnt(self):
+        
+        max_search_mnt = 0 
+        max_gallery_mnt = 0
+
+
+        print("Finding exact maximum dimensions...")
+        
+        for filename in tqdm(self.search_list, desc="Search files"):
+            feat = pickle.load(open(osp.join(self.search_folder, filename), "rb"))
+            max_search_mnt = max(max_search_mnt, feat["mnt"].shape[0])
+        
+        for filename in tqdm(self.gallery_list, desc="Gallery files"):
+            feat = pickle.load(open(osp.join(self.gallery_folder, filename), "rb"))
+            max_gallery_mnt = max(max_gallery_mnt, feat["mnt"].shape[0])
+        
+        print(f"Exact max search mnt: {max_search_mnt}")
+        print(f"Exact max gallery mnt: {max_gallery_mnt}")
+
+        return max_search_mnt, max_gallery_mnt
 
     def load_img(self, img_path):
         img = np.asarray(cv2.imread(img_path, cv2.IMREAD_GRAYSCALE), dtype=np.float32)
@@ -214,4 +239,6 @@ class MatchDataset(Dataset):
             "search_mask": search_feat_mask,
             "gallery_mask": gallery_feat_mask,
             "index": index_pair,
+            "max_search_size": self.max_search_mnt,
+            "max_gallery_size": self.max_gallery_mnt
         }

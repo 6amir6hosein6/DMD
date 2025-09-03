@@ -29,6 +29,7 @@ import os.path as osp
 import pandas
 IDX = 0
 
+
 def custom_repr(self):
     return f'{{Tensor:{tuple(self.shape)}}} {original_repr(self)}'
 
@@ -85,11 +86,16 @@ def pad_collate_fn(batch):
             else:
                 padded_tensor = tensor
             padded_list.append(padded_tensor)
-        return torch.stack(padded_list, dim=0)  #
+        return torch.stack(padded_list, dim=0)
+    
     N_list_search = [x['search_mnt'].shape[0] for x in batch]
     max_N_search = max(N_list_search)
     N_list_gallery = [x['gallery_mnt'].shape[0] for x in batch]
     max_N_gallery = max(N_list_gallery)
+
+    # max_N_search = batch[0]["max_search_size"]
+    # max_N_gallery = batch[0]["max_gallery_size"]
+
     search_mnt = [torch.tensor(item["search_mnt"], dtype=torch.float32) for item in batch]  
     gallery_mnt = [torch.tensor(item["gallery_mnt"], dtype=torch.float32) for item in batch]
     search_desc = [torch.tensor(item["search_desc"], dtype=torch.float32) for item in batch]
@@ -112,7 +118,7 @@ def pad_collate_fn(batch):
         "gallery_desc": gallery_desc,
         "search_mask": search_mask,
         "gallery_mask": gallery_mask,
-        "index": torch.stack(index)  #
+        "index": torch.stack(index),
     }
 
     return batch_dict 
@@ -238,8 +244,34 @@ def lsa_score_torchB(S, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4):
     score = torch.sum(score_select, dim=-1) / n_pair
 
     return score
+def hungarian(S, mnt1, mnt2):
 
-def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4):
+    n1 = S.shape[1] 
+    n2 = S.shape[2] 
+    B = S.shape[0]
+    assert n1 == mnt1.shape[1] and n2 == mnt2.shape[1]
+    S2 = S
+    max_n = max(n1, n2)
+    new_S = torch.nn.functional.pad(1 - S2, (0, max_n - n2, 0, max_n - n1, 0 , 0), value=2)
+    new_S = torch.where(torch.isnan(new_S), torch.tensor(2.0).to(new_S.device), new_S)
+
+    if n1 < n2:
+        batch_set_pairs = batch_linear_assignment(new_S)
+        org_pair = torch.arange(new_S.shape[1])[None,...].repeat(B,1).to(new_S.device)
+        pairs = torch.stack((org_pair,batch_set_pairs),dim=-1)
+        pairs = pairs[:,:n1, :]
+        scores = torch.gather(S, 2, pairs[:,:,1].unsqueeze(-1).repeat(1,1,1)).squeeze(-1)
+    else:
+        batch_set_pairs = batch_linear_assignment(new_S.transpose(1,2)) 
+        org_pair = torch.arange(new_S.shape[2])[None,...].repeat(B,1).to(new_S.device) 
+        pairs = torch.stack((batch_set_pairs, org_pair), dim=-1) 
+        pairs = pairs[:,:n2, :]
+        scores = torch.gather(S, 1, pairs[:,:,0].unsqueeze(-2).repeat(1,1,1)).squeeze(-2)
+    
+    return pairs, scores
+
+
+def lsar_score_torchB(S, mnt1, mnt2, pairs, hungarian_scores, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4):
     # S in shape (B, N1, N2), mnt1 in shape (B, N1, 3), mnt2 in shape (B, N2, 3), and not all the score or mnts are valid,
     # it has the placeholder 0 for ensuring the same size for parallel computing
     def sigmoid(z, mu_p, tau_p):
@@ -305,36 +337,20 @@ def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4
         score = torch.sum(lambda_t_sorted, dim=-1) / n_pair
         return score
     
-    n1 = S.shape[1] 
-    n2 = S.shape[2] 
-    B = S.shape[0]
-    assert n1 == mnt1.shape[1] and n2 == mnt2.shape[1]
-    S2 = S
-    max_n = max(n1, n2)
-    new_S = torch.nn.functional.pad(1 - S2, (0, max_n - n2, 0, max_n - n1, 0 , 0), value=2)
-    new_S = torch.where(torch.isnan(new_S), torch.tensor(2.0).to(new_S.device), new_S)
-
-    #hungarian
-    if n1 < n2:
-        batch_set_pairs = batch_linear_assignment(new_S)
-        org_pair = torch.arange(new_S.shape[1])[None,...].repeat(B,1).to(new_S.device)
-        pairs = torch.stack((org_pair,batch_set_pairs),dim=-1)
-        pairs = pairs[:,:n1, :]
-        scores = torch.gather(S, 2, pairs[:,:,1].unsqueeze(-1).repeat(1,1,1)).squeeze(-1)
-    else:
-        batch_set_pairs = batch_linear_assignment(new_S.transpose(1,2)) 
-        org_pair = torch.arange(new_S.shape[2])[None,...].repeat(B,1).to(new_S.device) 
-        pairs = torch.stack((batch_set_pairs, org_pair), dim=-1) 
-        pairs = pairs[:,:n2, :]
-        scores = torch.gather(S, 1, pairs[:,:,0].unsqueeze(-2).repeat(1,1,1)).squeeze(-2)
+    #previously here was the hungarian part
 
     n1_batch = torch.sum(~torch.isnan(S[:,:,0]), dim=-1)
     n2_batch = torch.sum(~torch.isnan(S[:,0,:]), dim=-1)
+    
     min_number = torch.min(n1_batch, n2_batch)
     n_pair = min_pair + torch.round(sigmoid(min_number, mu_p, tau_p) * (max_pair - min_pair)).int()
+    
+    
     mnt1_order = torch.gather(mnt1, 1, pairs[:,:,0].unsqueeze(-1).repeat(1,1,3))
     mnt2_order = torch.gather(mnt2, 1, pairs[:,:,1].unsqueeze(-1).repeat(1,1,3)) 
-    score = relax_labeling(mnt1_order, mnt2_order, scores, min_number, n_pair) 
+
+    score = relax_labeling(mnt1_order, mnt2_order, hungarian_scores, min_number, n_pair) 
+
     return score
 class Evaluator:
     def __init__(self, params, gpus, is_load=False, is_relax=True, Normalize=True, Binary=False) -> None:
@@ -348,6 +364,8 @@ class Evaluator:
         print(yaml.dump(params, allow_unicode=True, default_flow_style=False))
         self.params = params
         self.Normalize = Normalize
+        self.calculate_score_torchB_compiled = torch.compile(calculate_score_torchB, dynamic=True, fullgraph=False)
+        self.lsar_score_torchB_compiled = torch.compile(lsar_score_torchB, dynamic=True, fullgraph=False)
         if self.Normalize:
             postfix = ''
         else:
@@ -386,10 +404,10 @@ class Evaluator:
                 dataname=self.eval_dataset,
             )
             logging.info(f"Dataset: {self.eval_dataset}")
-            workers = 1
+            workers = 8
             self.evalloader = DataLoaderX(
                 dataset=self.test_dataset,
-                batch_size=self.batch_size,
+                batch_size=500,
                 shuffle=False,
                 num_workers=workers,
                 pin_memory=torch.cuda.is_available(),
@@ -526,69 +544,74 @@ class Evaluator:
         global IDX
         print(f'start calculating the scores on {self.search_folder}')
         search_imgs = os.listdir(self.search_folder)
-        search_imgs.sort()
+        search_imgs.sort(key=lambda x: os.path.getsize(osp.join(self.search_folder, x)))
         gallery_imgs = os.listdir(self.gallery_folder)
-        gallery_imgs.sort()
+        gallery_imgs.sort(key=lambda x: os.path.getsize(osp.join(self.gallery_folder, x)))
         # calculate the scores
-        score_matrix = np.zeros((len(search_imgs), len(gallery_imgs)))
+        score_matrix = torch.zeros((len(search_imgs), len(gallery_imgs)), device=self.main_dev)
         # create the dataset for calculating the scores
         match_dataset = MatchDataset(self.save_folder)
-        workers = 1
+        workers = 8
         matchloader = DataLoaderX(
             dataset=match_dataset,
-            batch_size=1,
+            batch_size=self.batch_size,
             collate_fn=pad_collate_fn,
             shuffle=False,
             num_workers=workers,
             pin_memory=torch.cuda.is_available(),
             drop_last=False,
         )
-        times['cs_dataload'] = time.time() - cs_dataload_start_time
 
         
+        from torch.profiler import profile, record_function, ProfilerActivity
 
         loop_start_time = time.time()
+        stream = torch.cuda.Stream()
 
-        with torch.no_grad():
-            for item in tqdm(matchloader): #
+        total_padding = 0
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            with torch.no_grad():
+                for item in tqdm(matchloader):
+                    with torch.cuda.stream(stream):                    
+                        search_feat = item["search_desc"].to(self.main_dev, non_blocking=True)
+                        gallery_feat = item["gallery_desc"].to(self.main_dev, non_blocking=True)
+                        search_mask = item["search_mask"].to(self.main_dev, non_blocking=True)
+                        gallery_mask = item["gallery_mask"].to(self.main_dev, non_blocking=True)
+                        search_mnt = item["search_mnt"].to(self.main_dev, non_blocking=True)
+                        gallery_mnt = item["gallery_mnt"].to(self.main_dev, non_blocking=True)
+                        index_pair = item["index"]
+                        start = time.time()
 
-                calculate_score_device_start_time = time.time()
-                search_feat = item["search_desc"].to(self.main_dev)
-                gallery_feat = item["gallery_desc"].to(self.main_dev)
-                search_mask = item["search_mask"].to(self.main_dev)
-                gallery_mask = item["gallery_mask"].to(self.main_dev)
-                search_mnt = item["search_mnt"].to(self.main_dev)
-                gallery_mnt = item["gallery_mnt"].to(self.main_dev)
-                index_pair = item["index"]
-                start = time.time()
-                times['cs_device'] += time.time() - calculate_score_device_start_time
+                        calculate_score_torchB_start_time = time.time()
+                        scores = self.calculate_score_torchB_compiled(search_feat, gallery_feat, search_mask, gallery_mask, ndim_feat=self.ndim_feat*2,  Normalize=self.Normalize, N_mean=5, binary=self.binary, f2f_type=(2,1))
+                        times['calculate_score_torchB'] += time.time() - calculate_score_torchB_start_time
+                        if self.relax:
+                            hungarian_start_time = time.time()
+                            pairs, hungarian_score = hungarian(scores, search_mnt, gallery_mnt) # to get the pairs
+                            times['hungarian'] += time.time() - hungarian_start_time
 
+                            lsar_score_torchB_start_time = time.time()
+                            score = self.lsar_score_torchB_compiled(scores, search_mnt, gallery_mnt, pairs, hungarian_score)
+                            times['lsar_score_torchB'] += time.time() - lsar_score_torchB_start_time
 
-                calculate_score_torchB_start_time = time.time()
-                scores = calculate_score_torchB(search_feat, gallery_feat, search_mask, gallery_mask, ndim_feat=self.ndim_feat*2,  Normalize=self.Normalize, N_mean=5, binary=self.binary, f2f_type=(2,1))
-                times['calculate_score_torchB'] += time.time() - calculate_score_torchB_start_time
+                        else:
+                            score = scores
 
-                if self.relax:
+                        
+                        self.matching_time += time.time() - start
+                        # assign the score into the score_matrix
+                        # index_pair is in [B,2]
+                        # score_matrix[index_pair[:,0], index_pair[:,1]] = score.cpu().numpy()
+                        score_matrix[index_pair[:, 0], index_pair[:, 1]] = score
+                    torch.cuda.current_stream().wait_stream(stream)
 
-                    lsar_score_torchB_start_time = time.time()
-                    score = lsar_score_torchB(scores, search_mnt, gallery_mnt)
-                    times['lsar_score_torchB'] += time.time() - lsar_score_torchB_start_time
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
 
-                else:
-                    score = scores
-                self.matching_time += time.time() - start
-                # assign the score into the score_matrix
-                # index_pair is in [B,2]
-                calculate_score_assign_score_start_time = time.time()
-                score_matrix[index_pair[:,0], index_pair[:,1]] = score.cpu().numpy()
-                times['cs_assign_score'] += time.time() - calculate_score_assign_score_start_time
-        
         times['loop_overhead'] = time.time() - loop_start_time - (
-            times['cs_device'] + times['calculate_score_torchB'] + times['lsar_score_torchB'] + times['cs_assign_score']
-        )
+            times['calculate_score_torchB'] + times['lsar_score_torchB'] + times['hungarian'])
 
-        
-        cs_save_start_time = time.time()
+        score_matrix = score_matrix.cpu().numpy()
+
         # save the score_matrix
         df = pandas.DataFrame(score_matrix)
         df.columns = gallery_imgs
@@ -596,7 +619,6 @@ class Evaluator:
         df.to_csv(self.score_file)
         # report the matching speed
         logging.info(f"Matching time: {(self.matching_time/score_matrix.size):.2e}s")
-        times['cs_save'] = time.time() - cs_save_start_time
 
     def eval_metric(self):
         # generate the score matrix
@@ -636,15 +658,12 @@ class Evaluator:
 
         rank1_general(score_matrix, target_matrix, dataname=self.eval_dataset)
         TAR_flatten(score_matrix, target_matrix, dataname=self.eval_dataset)
-
-times = {}
-
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Evaluation for DMD")
-    parser.add_argument("--eval_dataset", "-d", type=str, required=False, default="SNIST27", help="The dataset for evaluation")
+    parser.add_argument("--eval_dataset", "-d", type=str, required=False, default="NIST27", help="The dataset for evaluation")
     parser.add_argument("--gpus", "-g", default=[0], type=int, nargs="+")
-    parser.add_argument("--extract", "-e", action="store_true", default=True)
+    parser.add_argument("--extract", "-e", action="store_true", default=False)
     parser.add_argument("--binary", "-b", action="store_true")
     parser.add_argument("--method", "-m", type=str, required=False, default='DMD',  help="The DMD version for evaluation")
     parser.add_argument("--score_norm", "-sn", action="store_true", default=True, help="Whether to use score normalization or not")
@@ -659,63 +678,58 @@ if __name__ == '__main__':
     import pandas as pd
     import os
 
-    csv_file = 'execution_times_b1_w1.csv'
+    batch_sizes = [256]
+    for i in batch_sizes:
+        params.batch_size = i
+        args.batch_size = i
 
-    if os.path.exists(csv_file):
-        df = pd.read_csv(csv_file)
-    else:
-        df = pd.DataFrame(columns=[])
-    
-    num_runs = 10
+        csv_file = f"execution_times_b{i}_w8.csv"
 
-    for run in range(num_runs):
-        times = {
-            # 'evaluator': 0.0,
-            # 'extract_feat': 0.0,
-            'calculate_score_torchB': 0.0,
-            'lsar_score_torchB': 0.0,
-            # 'concatenate_feat': 0.0,
-            'calculate_scores': 0.0,
-            # 'eval_metric': 0.0,
-            # 'calculate_score_dataloader' : 0.0,
-            'cs_device': 0.0,
-            'cs_assign_score': 0.0,
-            'cs_dataload': 0.0,
-            'cs_save': 0.0,
-        }
-
-        evaluator_start_time = time.time()
-        t = Evaluator(params, args.gpus, is_load=args.extract, is_relax=True, Normalize=args.score_norm, Binary=args.binary) 
-        # times['evaluator'] = time.time() - evaluator_start_time
-
-        if args.extract:
-
-
-            extract_feat_start_time = time.time()
-            t.extract_feat()
-            # times['extract_feat'] = time.time() - extract_feat_start_time
-
-
-            concatenate_feat_start_time = time.time()
-            t.concatenate_feat()
-            # times['concatenate_feat'] = time.time() - concatenate_feat_start_time
-
-
-        calculate_scores_start_time = time.time()
-        t.calculate_scores()
-        times['calculate_scores'] = time.time() - calculate_scores_start_time
-
-
-        eval_metric_start_time = time.time()
-        t.eval_metric()
-        # times['eval_metric'] = time.time() - eval_metric_start_time
-
-        # Append the times to the DataFrame and save to CSV
-        df = pd.concat([df, pd.DataFrame([times])], ignore_index=True)
-        df.to_csv(csv_file, index=False)
-
+        if os.path.exists(csv_file):
+            df = pd.read_csv(csv_file)
+        else:
+            df = pd.DataFrame(columns=[])
         
-    print(f"Completed {num_runs} runs. Results saved to {csv_file}")    
+        num_runs = 1
+
+        for run in range(num_runs):
+            times = {
+                'calculate_score_torchB' : 0.0,
+                'lsar_score_torchB' : 0.0,
+                'hungarian' : 0.0,
+                'loop_overhead' : 0.0,
+                'calculate_scores': 0.0,
+            }
+
+            evaluator_start_time = time.time()
+            t = Evaluator(params, args.gpus, is_load=args.extract, is_relax=True, Normalize=args.score_norm, Binary=args.binary) 
+            # times['evaluator'] = time.time() - evaluator_start_time
+
+            if args.extract:
+
+
+                t.extract_feat()
+
+
+                t.concatenate_feat()
+
+
+            calculate_scores_start_time = time.time()
+            t.calculate_scores()
+            times['calculate_scores'] = time.time() - calculate_scores_start_time
+
+            try:
+                t.eval_metric()
+            except Exception as e:
+                print(f"Error during eval_metric: {e}")
+            
+
+            # Append the times to the DataFrame and save to CSV
+            df = pd.concat([df, pd.DataFrame([times])], ignore_index=True)
+            df.to_csv(csv_file, index=False)
+
+            
+        print(f"Completed {num_runs} runs. Results saved to {csv_file}")    
     # t = Evaluator(params, args.gpus, is_load=args.extract, is_relax=True, Normalize=args.score_norm, Binary=args.binary) 
     # logging.info(f"Start to evaluate the dataset: {t.eval_dataset}")
     # if args.extract:
