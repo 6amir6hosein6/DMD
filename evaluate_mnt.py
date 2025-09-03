@@ -528,7 +528,7 @@ class Evaluator:
         gallery_imgs = os.listdir(self.gallery_folder)
         gallery_imgs.sort(key=lambda x: os.path.getsize(osp.join(self.gallery_folder, x)))
         # calculate the scores
-        score_matrix = np.zeros((len(search_imgs), len(gallery_imgs)))
+        score_matrix = torch.zeros((len(search_imgs), len(gallery_imgs)), device=self.main_dev)
         # create the dataset for calculating the scores
         match_dataset = MatchDataset(self.save_folder)
         workers = self.workers
@@ -559,7 +559,10 @@ class Evaluator:
                 self.matching_time += time.time() - start
                 # assign the score into the score_matrix
                 # index_pair is in [B,2]
-                score_matrix[index_pair[:,0], index_pair[:,1]] = score.cpu().numpy()
+                score_matrix[index_pair[:, 0], index_pair[:, 1]] = score
+        
+        score_matrix = score_matrix.cpu().numpy()
+        
         # save the score_matrix
         df = pandas.DataFrame(score_matrix)
         df.columns = gallery_imgs
@@ -610,7 +613,7 @@ class Evaluator:
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("Evaluation for DMD")
-    parser.add_argument("--eval_dataset", "-d", type=str, required=False, default="SNIST27", help="The dataset for evaluation")
+    parser.add_argument("--eval_dataset", "-d", type=str, required=False, default="NIST27", help="The dataset for evaluation")
     parser.add_argument("--gpus", "-g", default=[0], type=int, nargs="+")
     parser.add_argument("--extract", "-e", action="store_true", default=True)
     parser.add_argument("--binary", "-b", action="store_true")
