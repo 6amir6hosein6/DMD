@@ -1,3 +1,7 @@
 fptools
 logs
-
+TEST_DATA
+datasets/NIST27.pklNIST27.pkl
+datasets/SNIST27.pkl
+fptools/*
+# runtime
