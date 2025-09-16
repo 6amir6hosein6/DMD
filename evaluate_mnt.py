@@ -239,7 +239,34 @@ def lsa_score_torchB(S, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4):
 
     return score
 
-def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4):
+
+def hungarian(S, mnt1, mnt2):
+
+    n1 = S.shape[1] 
+    n2 = S.shape[2] 
+    B = S.shape[0]
+    assert n1 == mnt1.shape[1] and n2 == mnt2.shape[1]
+    S2 = S
+    max_n = max(n1, n2)
+    new_S = torch.nn.functional.pad(1 - S2, (0, max_n - n2, 0, max_n - n1, 0 , 0), value=2)
+    new_S = torch.where(torch.isnan(new_S), torch.tensor(2.0).to(new_S.device), new_S)
+
+    if n1 < n2:
+        batch_set_pairs = batch_linear_assignment(new_S)
+        org_pair = torch.arange(new_S.shape[1])[None,...].repeat(B,1).to(new_S.device)
+        pairs = torch.stack((org_pair,batch_set_pairs),dim=-1)
+        pairs = pairs[:,:n1, :]
+        scores = torch.gather(S, 2, pairs[:,:,1].unsqueeze(-1).repeat(1,1,1)).squeeze(-1)
+    else:
+        batch_set_pairs = batch_linear_assignment(new_S.transpose(1,2)) 
+        org_pair = torch.arange(new_S.shape[2])[None,...].repeat(B,1).to(new_S.device) 
+        pairs = torch.stack((batch_set_pairs, org_pair), dim=-1) 
+        pairs = pairs[:,:n2, :]
+        scores = torch.gather(S, 1, pairs[:,:,0].unsqueeze(-2).repeat(1,1,1)).squeeze(-2)
+    
+    return pairs, scores
+
+def lsar_score_torchB(S, mnt1, mnt2, pairs, hungarian_scores, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4):
     # S in shape (B, N1, N2), mnt1 in shape (B, N1, 3), mnt2 in shape (B, N2, 3), and not all the score or mnts are valid,
     # it has the placeholder 0 for ensuring the same size for parallel computing
     def sigmoid(z, mu_p, tau_p):
@@ -314,28 +341,21 @@ def lsar_score_torchB(S, mnt1, mnt2, min_pair=4, max_pair=12, mu_p=20, tau_p=0.4
     new_S = torch.nn.functional.pad(1 - S2, (0, max_n - n2, 0, max_n - n1, 0 , 0), value=2)
     new_S = torch.where(torch.isnan(new_S), torch.tensor(2.0).to(new_S.device), new_S)
 
-    #hungarian
-    if n1 < n2:
-        batch_set_pairs = batch_linear_assignment(new_S)
-        org_pair = torch.arange(new_S.shape[1])[None,...].repeat(B,1).to(new_S.device)
-        pairs = torch.stack((org_pair,batch_set_pairs),dim=-1)
-        pairs = pairs[:,:n1, :]
-        scores = torch.gather(S, 2, pairs[:,:,1].unsqueeze(-1).repeat(1,1,1)).squeeze(-1)
-    else:
-        batch_set_pairs = batch_linear_assignment(new_S.transpose(1,2)) 
-        org_pair = torch.arange(new_S.shape[2])[None,...].repeat(B,1).to(new_S.device) 
-        pairs = torch.stack((batch_set_pairs, org_pair), dim=-1) 
-        pairs = pairs[:,:n2, :]
-        scores = torch.gather(S, 1, pairs[:,:,0].unsqueeze(-2).repeat(1,1,1)).squeeze(-2)
-
     n1_batch = torch.sum(~torch.isnan(S[:,:,0]), dim=-1)
     n2_batch = torch.sum(~torch.isnan(S[:,0,:]), dim=-1)
+
     min_number = torch.min(n1_batch, n2_batch)
     n_pair = min_pair + torch.round(sigmoid(min_number, mu_p, tau_p) * (max_pair - min_pair)).int()
+
+
     mnt1_order = torch.gather(mnt1, 1, pairs[:,:,0].unsqueeze(-1).repeat(1,1,3))
     mnt2_order = torch.gather(mnt2, 1, pairs[:,:,1].unsqueeze(-1).repeat(1,1,3)) 
-    score = relax_labeling(mnt1_order, mnt2_order, scores, min_number, n_pair) 
+
+
+    score = relax_labeling(mnt1_order, mnt2_order, hungarian_scores, min_number, n_pair) 
     return score
+
+
 class Evaluator:
 <<<<<<< HEAD
     def __init__(self, params, gpus, is_load=False, is_relax=False, Normalize=False, Binary=False) -> None:
@@ -352,6 +372,8 @@ class Evaluator:
         print(yaml.dump(params, allow_unicode=True, default_flow_style=False))
         self.params = params
         self.Normalize = Normalize
+        self.calculate_score_torchB_compiled = torch.compile(calculate_score_torchB, dynamic=True, fullgraph=False)
+        self.lsar_score_torchB_compiled = torch.compile(lsar_score_torchB, dynamic=True, fullgraph=False)
         if self.Normalize:
             postfix = ''
         else:
@@ -555,9 +577,12 @@ class Evaluator:
                 gallery_mnt = item["gallery_mnt"].to(self.main_dev)
                 index_pair = item["index"]
                 start = time.time()
-                scores = calculate_score_torchB(search_feat, gallery_feat, search_mask, gallery_mask, ndim_feat=self.ndim_feat*2,  Normalize=self.Normalize, N_mean=5, binary=self.binary, f2f_type=(2,1))
+                
+                scores = self.calculate_score_torchB_compiled(search_feat, gallery_feat, search_mask, gallery_mask, ndim_feat=self.ndim_feat*2,  Normalize=self.Normalize, N_mean=5, binary=self.binary, f2f_type=(2,1))
+                
                 if self.relax:
-                    score = lsar_score_torchB(scores, search_mnt, gallery_mnt)
+                    pairs, hungarian_score = hungarian(scores, search_mnt, gallery_mnt) # to get the pairs
+                    score = self.lsar_score_torchB_compiled(scores, search_mnt, gallery_mnt, pairs, hungarian_score)
                 else:
                     score = scores
                 self.matching_time += time.time() - start
