@@ -1,0 +1,10 @@
+numpy
+scipy
+scikit-learn
+opencv-contrib-python
+pandas
+scikit-learn
+tqdm
+imageio
+pyyaml
+easydict
