@@ -121,6 +121,37 @@ python evaluate_mnt.py -d $DatasetName -m $DMDVersion -sn
 
 The `-sn` flag enables score normalization based on the overlapping area between fingerprints. This option can be flexibly enabled or disabled depending on the evaluation setting. In our original paper, this strategy was applied when evaluating minutiae extracted using VeriFinger, but was not required for minutiae extracted using FDD.
 
+## Easy Docker Deployment  
+
+You can use the provided Dockerfile to set up the environment in just a few steps:  
+
+### 1. Build the Docker image  
+From the root directory of the project, run:  
+
+```bash
+sudo docker build -t dmd:v1 .
+```  
+
+This command will:  
+- Build the Docker image using the `Dockerfile` in the current directory.  
+- Download the pretrained weights and a small sample dataset for testing.  
+- Automatically install all required packages.  
+- Run `python dump_dataset_mnteval.py` to prepare the test dataset.  
+
+### 2. Run the Docker container  
+Once the image is built, you can start a container with:  
+
+```bash
+sudo docker run --gpus all -it --rm dmd:v1
+```  
+
+Explanation of the flags and parameters:  
+- **`--gpus all`** → Enables GPU access inside the container (requires NVIDIA Docker support).  
+- **`-it`** → Runs the container in interactive mode with a terminal attached.  
+- **`--rm`** → Automatically removes the container when it exits (keeps things clean).  
+- **`dmd:v1`** → The name and tag of the image you built in step 1.  
+
+
 ## 📄 License & Usage
 
 This project is released under the **Apache 2.0 license**.
