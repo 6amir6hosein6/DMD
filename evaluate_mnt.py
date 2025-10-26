@@ -175,10 +175,24 @@ def calculate_score_torchB(feat1, feat2, mask1, mask2, ndim_feat=6, N_mean=1327,
     feat2_mask = mask2.repeat(1, 1, ndim_feat) 
 
     if binary:
+        # Create masks for NaN values before thresholding
+        feat1_dense_nan_mask = torch.isnan(feat1_dense)
+        feat2_dense_nan_mask = torch.isnan(feat2_dense)
+        feat1_mask_nan_mask = torch.isnan(feat1_mask)
+        feat2_mask_nan_mask = torch.isnan(feat2_mask)
+
+        # Apply thresholding
         feat1_dense = (feat1_dense > 0).float()
         feat2_dense = (feat2_dense > 0).float()
         feat1_mask = (feat1_mask > THRESHS[f2f_type[0]]).float()
         feat2_mask = (feat2_mask > THRESHS[f2f_type[1]]).float()
+
+        # Restore NaN values
+        feat1_dense[feat1_dense_nan_mask] = float('nan')
+        feat2_dense[feat2_dense_nan_mask] = float('nan')
+        feat1_mask[feat1_mask_nan_mask] = float('nan')
+        feat2_mask[feat2_mask_nan_mask] = float('nan')
+
         n12 = torch.bmm(feat1_mask, feat2_mask.transpose(1, 2))
         d12 = (
             n12
